@@ -33,7 +33,7 @@ const App = () => {
   const columns = [
     {
       id: "todo",
-      title: "me",
+      title: "To Do",
       icon: <AlertCircle className="w-4 h-4 text-slate-400" />,
       color: "bg-slate-100",
     },
@@ -339,7 +339,7 @@ const App = () => {
                   >
                     <option value="low">Low Priority</option>
                     <option value="medium">Medium Priority</option>
-                    <option value="high">High Priority 🔥</option>
+                    <option value="high">High Priority</option>
                   </select>
                 </div>
                 <div className="flex flex-col justify-end">
