@@ -24,6 +24,7 @@ const App = () => {
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
+  const [selectedTicket, setSelectedTicket] = useState(null);
   const [newTicket, setNewTicket] = useState({
     title: "",
     description: "",
@@ -131,11 +132,28 @@ const App = () => {
       const updatedTickets = tickets.map((t) => (t.id === id ? { ...t, status: newStatus } : t));
       setTickets(updatedTickets);
       saveToLocal(updatedTickets);
+      try {
+        await fetch(`${API_BASE}/tickets/${id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: newStatus }),
+        });
+      } catch {
+        // stay on local update if backend unreachable
+      }
     }
   };
 
-  const handleAIGenerate = (id) => {
-    alert(`Sprint 2 Feature: AI is analyzing Task #${id} to generate Acceptance Criteria...`);
+  const handleAIGenerate = async (id) => {
+    try {
+      const response = await fetch(`${API_BASE}/tickets/${id}`);
+      if (!response.ok) throw new Error();
+      const data = await response.json();
+      setSelectedTicket(data);
+    } catch {
+      const local = tickets.find((t) => t.id === id);
+      setSelectedTicket(local || null);
+    }
   };
 
   return (
@@ -210,7 +228,8 @@ const App = () => {
                   .map((ticket) => (
                     <div
                       key={ticket.id}
-                      className="group bg-white p-4 rounded-xl border border-slate-200 shadow-sm hover:shadow-md hover:border-purple-200 transition-all"
+                      onClick={() => handleAIGenerate(ticket.id)}
+                      className="group bg-white p-4 rounded-xl border border-slate-200 shadow-sm hover:shadow-md hover:border-purple-200 transition-all cursor-pointer"
                     >
                       <div className="flex justify-between items-start mb-2">
                         <span
@@ -225,7 +244,7 @@ const App = () => {
                           {ticket.priority || "Medium"}
                         </span>
                         <button
-                          onClick={() => handleDelete(ticket.id)}
+                          onClick={(e) => { e.stopPropagation(); handleDelete(ticket.id); }}
                           className="opacity-0 group-hover:opacity-100 p-1 hover:text-red-500 text-slate-300 transition-all"
                           type="button"
                         >
@@ -241,7 +260,7 @@ const App = () => {
 
                       <div className="pt-3 border-t border-slate-50 flex items-center justify-between">
                         <button
-                          onClick={() => handleAIGenerate(ticket.id)}
+                          onClick={(e) => { e.stopPropagation(); handleAIGenerate(ticket.id); }}
                           className="flex items-center gap-1.5 text-[10px] font-bold text-purple-600 hover:bg-purple-50 px-2 py-1 rounded-lg transition-colors border border-transparent hover:border-purple-100"
                           type="button"
                         >
@@ -252,7 +271,7 @@ const App = () => {
                         <div className="flex gap-1">
                           {column.id !== "todo" && (
                             <button
-                              onClick={() => moveTicket(ticket.id, ticket.status, "prev")}
+                              onClick={(e) => { e.stopPropagation(); moveTicket(ticket.id, ticket.status, "prev"); }}
                               className="p-1.5 text-slate-400 hover:text-purple-600 hover:bg-purple-50 rounded-lg transition-all"
                               title="Move back"
                               type="button"
@@ -262,7 +281,7 @@ const App = () => {
                           )}
                           {column.id !== "done" && (
                             <button
-                              onClick={() => moveTicket(ticket.id, ticket.status, "next")}
+                              onClick={(e) => { e.stopPropagation(); moveTicket(ticket.id, ticket.status, "next"); }}
                               className="p-1.5 text-slate-400 hover:text-purple-600 hover:bg-purple-50 rounded-lg transition-all"
                               title="Move forward"
                               type="button"
@@ -286,6 +305,64 @@ const App = () => {
           ))}
         </div>
       </main>
+
+      {selectedTicket && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl border border-slate-100 overflow-hidden animate-in zoom-in-95 duration-300">
+            <div className="flex items-start justify-between p-6 border-b border-slate-100 bg-slate-50/50">
+              <div className="flex-1 pr-4">
+                <h2 className="text-lg font-bold text-slate-800">{selectedTicket.title}</h2>
+                <p className="text-xs text-slate-500 mt-1">{selectedTicket.description || "No description provided."}</p>
+              </div>
+              <button onClick={() => setSelectedTicket(null)} className="p-2 rounded-full hover:bg-slate-200 text-slate-400 transition-colors" type="button">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-5">
+              <div className="grid grid-cols-3 gap-3">
+                <div className="bg-purple-50 border border-purple-100 rounded-2xl p-3 text-center">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-purple-400 mb-1">Story Points</p>
+                  <p className="text-2xl font-black text-purple-700">{selectedTicket.story_points ?? "—"}</p>
+                </div>
+                <div className="bg-amber-50 border border-amber-100 rounded-2xl p-3 text-center">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-amber-400 mb-1">Priority</p>
+                  <p className="text-sm font-black text-amber-700 capitalize">{selectedTicket.priority ?? "—"}</p>
+                </div>
+                <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-3 text-center">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-emerald-400 mb-1">Source</p>
+                  <p className="text-sm font-black text-emerald-700 capitalize">{selectedTicket.ai_source ?? "—"}</p>
+                </div>
+              </div>
+
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <Sparkles className="w-4 h-4 text-purple-500" />
+                  <h3 className="text-xs font-black uppercase tracking-widest text-slate-500">Acceptance Criteria</h3>
+                </div>
+                {selectedTicket.acceptance_criteria && selectedTicket.acceptance_criteria.length > 0 ? (
+                  <ul className="space-y-2">
+                    {selectedTicket.acceptance_criteria.map((criterion, index) => (
+                      <li key={index} className="flex items-start gap-2 text-sm text-slate-700 bg-slate-50 rounded-xl p-3 border border-slate-100">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />
+                        <span>{criterion}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-xs text-slate-400 italic">No acceptance criteria generated yet.</p>
+                )}
+              </div>
+            </div>
+
+            <div className="px-6 pb-6">
+              <button onClick={() => setSelectedTicket(null)} className="w-full py-3 rounded-2xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-sm transition-all shadow-lg shadow-purple-200 active:scale-[0.98]">
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">

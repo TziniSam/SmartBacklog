@@ -65,34 +65,28 @@ def init_db() -> None:
         )
         count = conn.execute("SELECT COUNT(*) FROM tickets").fetchone()[0]
         if count == 0:
-            conn.executemany(
-                "INSERT INTO tickets(title, description, status) VALUES(?, ?, ?)",
-                [
-                    ("Login Page", "Build login page with email and password.", "todo"),
-                    ("Dashboard UI", "Create dashboard widgets and navigation.", "in-progress"),
-                ],
-            )
-            conn.execute(
-                """
-                INSERT INTO tickets(title, description, status, acceptance_criteria, story_points, priority, ai_source)
-                VALUES(?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    "Stripe Payment Integration",
-                    "Integrate Stripe checkout with webhook confirmation and error handling.",
-                    "todo",
-                    json.dumps(
-                        [
-                            "Given valid card details, when payment is submitted, then order status updates to paid.",
-                            "Given a failed payment, when Stripe returns an error, then user sees a clear retry message.",
-                            "Given payment success, when webhook is received, then transaction is stored with reference id.",
-                        ]
+            seeds = [
+                ("Login Page", "Build login page with email and password.", "todo"),
+                ("Dashboard UI", "Create dashboard widgets and navigation.", "in-progress"),
+                ("Stripe Payment Integration", "Integrate Stripe checkout with webhook confirmation and error handling.", "todo"),
+            ]
+            for title, description, status in seeds:
+                ai = generate_ai_fields(title, description)
+                conn.execute(
+                    """
+                    INSERT INTO tickets(title, description, status, acceptance_criteria, story_points, priority, ai_source)
+                    VALUES(?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        title,
+                        description,
+                        status,
+                        json.dumps(ai["acceptance_criteria"]),
+                        ai["story_points"],
+                        ai["priority"],
+                        ai["ai_source"],
                     ),
-                    8,
-                    "urgent",
-                    "seed",
-                ),
-            )
+                )
 
 
 @app.on_event("startup")
