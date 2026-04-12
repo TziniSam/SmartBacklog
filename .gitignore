@@ -6,6 +6,7 @@ backend/*.pyo
 backend/*.egg-info/
 backend/.pytest_cache/
 backend/.env
+backend/*.db
 
 # Frontend Node
 frontend/node_modules/
