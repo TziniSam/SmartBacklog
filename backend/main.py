@@ -1,6 +1,8 @@
 import json
 import os
-from typing import Literal
+import sqlite3
+from pathlib import Path
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,44 +10,29 @@ from pydantic import BaseModel, Field
 
 try:
     from openai import OpenAI
-except ImportError:  # pragma: no cover - only used when package is unavailable
+except ImportError:
     OpenAI = None
 
 app = FastAPI()
 
-# Allow frontend connection
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # later restrict in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Dummy database
-tickets = [
-    {
-        "id": 1,
-        "title": "Login Page",
-        "description": "Build login page with email/password and validation.",
-        "status": "todo",
-    },
-    {
-        "id": 2,
-        "title": "Dashboard UI",
-        "description": "Create initial dashboard widgets and routing.",
-        "status": "in-progress",
-    },
-]
-
+DB_PATH = Path(__file__).resolve().parent / "smartbacklog.db"
 VALID_STATUSES = {"todo", "in-progress", "done"}
-VALID_STORY_POINTS = {1, 2, 3, 5, 8, 13}
+VALID_POINTS = {1, 2, 3, 5, 8, 13}
 
 
 class TicketCreate(BaseModel):
     title: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=5000)
     status: Literal["todo", "in-progress", "done"] = "todo"
+    auto_ai: bool = True
 
 
 class TicketUpdate(BaseModel):
@@ -54,251 +41,248 @@ class TicketUpdate(BaseModel):
     status: Literal["todo", "in-progress", "done"] | None = None
 
 
-class AcceptanceCriteriaRequest(BaseModel):
-    title: str = Field(min_length=1, max_length=120)
-    description: str = Field(default="", max_length=5000)
+def db_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
-class AcceptanceCriteriaResponse(BaseModel):
-    acceptance_criteria: list[str]
-    source: Literal["ai", "fallback"]
+def init_db() -> None:
+    with db_conn() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tickets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL,
+                acceptance_criteria TEXT,
+                story_points INTEGER,
+                priority TEXT,
+                ai_source TEXT
+            )
+            """
+        )
+        count = conn.execute("SELECT COUNT(*) FROM tickets").fetchone()[0]
+        if count == 0:
+            conn.executemany(
+                "INSERT INTO tickets(title, description, status) VALUES(?, ?, ?)",
+                [
+                    ("Login Page", "Build login page with email and password.", "todo"),
+                    ("Dashboard UI", "Create dashboard widgets and navigation.", "in-progress"),
+                ],
+            )
+            conn.execute(
+                """
+                INSERT INTO tickets(title, description, status, acceptance_criteria, story_points, priority, ai_source)
+                VALUES(?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "Stripe Payment Integration",
+                    "Integrate Stripe checkout with webhook confirmation and error handling.",
+                    "todo",
+                    json.dumps(
+                        [
+                            "Given valid card details, when payment is submitted, then order status updates to paid.",
+                            "Given a failed payment, when Stripe returns an error, then user sees a clear retry message.",
+                            "Given payment success, when webhook is received, then transaction is stored with reference id.",
+                        ]
+                    ),
+                    8,
+                    "urgent",
+                    "seed",
+                ),
+            )
 
 
-class StoryPointsRequest(BaseModel):
-    title: str = Field(default="", max_length=120)
-    description: str = Field(min_length=1, max_length=5000)
+@app.on_event("startup")
+def startup() -> None:
+    init_db()
 
 
-class StoryPointsResponse(BaseModel):
-    story_points: Literal[1, 2, 3, 5, 8, 13]
-    reasoning: str
-    source: Literal["ai", "fallback"]
+def row_to_ticket(row: sqlite3.Row) -> dict:
+    criteria = json.loads(row["acceptance_criteria"]) if row["acceptance_criteria"] else []
+    return {
+        "id": row["id"],
+        "title": row["title"],
+        "description": row["description"],
+        "status": row["status"],
+        "acceptance_criteria": criteria,
+        "story_points": row["story_points"],
+        "priority": row["priority"],
+        "ai_source": row["ai_source"],
+    }
 
 
-class PriorityRequest(BaseModel):
-    title: str = Field(min_length=1, max_length=120)
-    description: str = Field(default="", max_length=5000)
-
-
-class PriorityResponse(BaseModel):
-    priority: Literal["normal", "urgent", "blocking"]
-    is_urgent: bool
-    is_blocking: bool
-    reasoning: str
-    source: Literal["ai", "fallback"]
-
-
-def _next_ticket_id() -> int:
-    return max((ticket["id"] for ticket in tickets), default=0) + 1
-
-
-def _find_ticket_index(ticket_id: int) -> int:
-    for index, ticket in enumerate(tickets):
-        if ticket["id"] == ticket_id:
-            return index
-    raise HTTPException(status_code=404, detail="Ticket not found")
-
-
-def _openai_client() -> OpenAI | None:
+def _openai_client() -> Any | None:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key or OpenAI is None:
         return None
     return OpenAI(api_key=api_key)
 
 
-def _fallback_acceptance_criteria(title: str, description: str) -> list[str]:
-    scope = description.strip() or f"the {title} feature"
-    return [
-        f"Given a user accesses {title}, when they complete the expected action, then the system responds successfully.",
-        f"Given valid input for {title}, when the request is submitted, then data is saved and confirmed to the user.",
-        f"Given invalid or incomplete input in {title}, when validation runs, then clear error messages are displayed.",
-        f"Given {scope}, when an unexpected error occurs, then a user-friendly fallback message is shown.",
-        f"Given authorized users use {title}, when audit logging is enabled, then key actions are traceable.",
+def fallback_ai(title: str, description: str) -> dict:
+    text = f"{title} {description}".lower()
+    criteria = [
+        f"Given a user accesses {title}, when input is valid, then the action succeeds.",
+        f"Given invalid input in {title}, when submitted, then clear validation errors are shown.",
+        f"Given the operation for {title}, when backend fails, then the user sees a safe error message.",
     ]
+    points = 3
+    if len(text.split()) > 30:
+        points = 5
+    if any(word in text for word in ["security", "payment", "oauth", "integration"]):
+        points = 8
+    if points not in VALID_POINTS:
+        points = 5
+
+    priority = "normal"
+    if any(word in text for word in ["urgent", "critical", "asap", "today"]):
+        priority = "urgent"
+    if any(word in text for word in ["blocker", "blocking", "production down", "outage"]):
+        priority = "blocking"
+
+    return {
+        "acceptance_criteria": criteria,
+        "story_points": points,
+        "priority": priority,
+        "ai_source": "fallback",
+    }
 
 
-def _fallback_story_points(text: str) -> tuple[int, str]:
-    lowered = text.lower()
-    score = 1
-    if any(word in lowered for word in ["integration", "api", "payment", "oauth", "security"]):
-        score = max(score, 8)
-    if any(word in lowered for word in ["migration", "architecture", "refactor", "distributed"]):
-        score = max(score, 13)
-    if any(word in lowered for word in ["dashboard", "workflow", "report", "search"]):
-        score = max(score, 5)
-    if len(text.split()) > 80:
-        score = max(score, 8)
-    elif len(text.split()) > 35:
-        score = max(score, 5)
-    elif len(text.split()) > 15:
-        score = max(score, 3)
-    reasoning = "Estimated from feature scope, keywords, and description size."
-    return score if score in VALID_STORY_POINTS else 5, reasoning
-
-
-def _fallback_priority(text: str) -> tuple[str, bool, bool, str]:
-    lowered = text.lower()
-    blocking_words = ["blocker", "blocking", "cannot deploy", "production down", "outage"]
-    urgent_words = ["urgent", "asap", "critical", "deadline", "today", "immediately"]
-
-    is_blocking = any(word in lowered for word in blocking_words)
-    is_urgent = any(word in lowered for word in urgent_words)
-
-    if is_blocking:
-        return "blocking", True, True, "Contains blocker indicators that can halt delivery."
-    if is_urgent:
-        return "urgent", True, False, "Contains urgency indicators suggesting immediate attention."
-    return "normal", False, False, "No blocker or urgency indicators found in ticket text."
-
-
-SYSTEM_PROMPT = (
-    "You are an expert Agile Coach for Scrum teams. "
-    "Return concise JSON only, with practical and realistic ticket guidance."
-)
-
-
-def _ai_json(task_prompt: str) -> dict | None:
+def generate_ai_fields(title: str, description: str) -> dict:
     client = _openai_client()
     if client is None:
-        return None
+        return fallback_ai(title, description)
 
-    model = os.getenv("OPENAI_MODEL", "gpt-4o")
-    response = client.chat.completions.create(
-        model=model,
-        temperature=0.2,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": task_prompt},
-        ],
-        response_format={"type": "json_object"},
+    prompt = (
+        "You are an Agile coach. Return valid JSON only with keys: "
+        "acceptance_criteria (array of 3 strings), story_points (one of 1,2,3,5,8,13), "
+        "priority (normal|urgent|blocking). "
+        f"Title: {title}. Description: {description}"
     )
 
-    content = response.choices[0].message.content
-    if not content:
-        return None
-    return json.loads(content)
+    try:
+        model = os.getenv("OPENAI_MODEL", "gpt-4o")
+        response = client.chat.completions.create(
+            model=model,
+            temperature=0.2,
+            response_format={"type": "json_object"},
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are an expert Scrum Agile coach. Return concise JSON only.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+        )
+        content = response.choices[0].message.content
+        parsed = json.loads(content) if content else {}
+        criteria = parsed.get("acceptance_criteria", [])
+        points = int(parsed.get("story_points", 5))
+        priority = str(parsed.get("priority", "normal")).lower().strip()
 
-# Routes
+        if not isinstance(criteria, list) or not criteria:
+            raise ValueError("invalid acceptance criteria")
+        if points not in VALID_POINTS:
+            raise ValueError("invalid story points")
+        if priority not in {"normal", "urgent", "blocking"}:
+            raise ValueError("invalid priority")
+
+        return {
+            "acceptance_criteria": [str(item).strip() for item in criteria[:3] if str(item).strip()],
+            "story_points": points,
+            "priority": priority,
+            "ai_source": "ai",
+        }
+    except Exception:
+        return fallback_ai(title, description)
+
+
 @app.get("/")
-def root():
+def root() -> dict:
     return {"message": "API is running"}
 
+
 @app.get("/tickets")
-def get_tickets():
-    return tickets
+def get_tickets() -> list[dict]:
+    with db_conn() as conn:
+        rows = conn.execute("SELECT * FROM tickets ORDER BY id").fetchall()
+    return [row_to_ticket(row) for row in rows]
+
+
+@app.get("/tickets/{ticket_id}")
+def get_ticket(ticket_id: int) -> dict:
+    with db_conn() as conn:
+        row = conn.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    return row_to_ticket(row)
+
 
 @app.post("/tickets")
-def add_ticket(ticket: TicketCreate):
-    new_ticket = {
-        "id": _next_ticket_id(),
-        "title": ticket.title,
-        "description": ticket.description,
-        "status": ticket.status,
+def add_ticket(ticket: TicketCreate) -> dict:
+    if ticket.status not in VALID_STATUSES:
+        raise HTTPException(status_code=400, detail="Invalid ticket status")
+
+    ai_fields = {
+        "acceptance_criteria": [],
+        "story_points": None,
+        "priority": None,
+        "ai_source": None,
     }
-    tickets.append(new_ticket)
-    return new_ticket
+    if ticket.auto_ai:
+        ai_fields = generate_ai_fields(ticket.title, ticket.description)
+
+    with db_conn() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO tickets(title, description, status, acceptance_criteria, story_points, priority, ai_source)
+            VALUES(?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ticket.title,
+                ticket.description,
+                ticket.status,
+                json.dumps(ai_fields["acceptance_criteria"]),
+                ai_fields["story_points"],
+                ai_fields["priority"],
+                ai_fields["ai_source"],
+            ),
+        )
+        ticket_id = cursor.lastrowid
+        row = conn.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
+
+    return row_to_ticket(row)
 
 
 @app.put("/tickets/{ticket_id}")
-def update_ticket(ticket_id: int, ticket: TicketUpdate):
-    ticket_index = _find_ticket_index(ticket_id)
-    updated_ticket = tickets[ticket_index].copy()
+def update_ticket(ticket_id: int, ticket: TicketUpdate) -> dict:
+    with db_conn() as conn:
+        existing = conn.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Ticket not found")
 
-    incoming = ticket.model_dump(exclude_none=True)
-    for field_name, value in incoming.items():
-        updated_ticket[field_name] = value
+        title = ticket.title if ticket.title is not None else existing["title"]
+        description = ticket.description if ticket.description is not None else existing["description"]
+        status = ticket.status if ticket.status is not None else existing["status"]
 
-    if updated_ticket["status"] not in VALID_STATUSES:
-        raise HTTPException(status_code=400, detail="Invalid ticket status")
+        if status not in VALID_STATUSES:
+            raise HTTPException(status_code=400, detail="Invalid ticket status")
 
-    tickets[ticket_index] = updated_ticket
-    return updated_ticket
+        conn.execute(
+            "UPDATE tickets SET title = ?, description = ?, status = ? WHERE id = ?",
+            (title, description, status, ticket_id),
+        )
+        row = conn.execute("SELECT * FROM tickets WHERE id = ?", (ticket_id,)).fetchone()
+
+    return row_to_ticket(row)
+
 
 @app.delete("/tickets/{ticket_id}")
-def delete_ticket(ticket_id: int):
-    ticket_index = _find_ticket_index(ticket_id)
-    tickets.pop(ticket_index)
+def delete_ticket(ticket_id: int) -> dict:
+    with db_conn() as conn:
+        deleted = conn.execute("DELETE FROM tickets WHERE id = ?", (ticket_id,))
+        if deleted.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Ticket not found")
     return {"message": "Deleted"}
-
-
-@app.post("/ai/acceptance-criteria", response_model=AcceptanceCriteriaResponse)
-def generate_acceptance_criteria(payload: AcceptanceCriteriaRequest):
-    prompt = (
-        "Generate acceptance criteria for a Scrum user story. "
-        "Return JSON: {\"acceptance_criteria\": [string, ...]} with exactly 5 items.\n"
-        f"Title: {payload.title}\n"
-        f"Description: {payload.description}"
-    )
-
-    try:
-        result = _ai_json(prompt)
-        if result and isinstance(result.get("acceptance_criteria"), list):
-            criteria = [str(item).strip() for item in result["acceptance_criteria"] if str(item).strip()]
-            if criteria:
-                return {"acceptance_criteria": criteria[:5], "source": "ai"}
-    except Exception:
-        pass
-
-    fallback = _fallback_acceptance_criteria(payload.title, payload.description)
-    return {"acceptance_criteria": fallback, "source": "fallback"}
-
-
-@app.post("/ai/story-points", response_model=StoryPointsResponse)
-def estimate_story_points(payload: StoryPointsRequest):
-    text = f"{payload.title} {payload.description}".strip()
-    prompt = (
-        "Estimate Scrum story points using Fibonacci scale [1,2,3,5,8,13]. "
-        "Return JSON: {\"story_points\": number, \"reasoning\": string}.\n"
-        f"Ticket text: {text}"
-    )
-
-    try:
-        result = _ai_json(prompt)
-        if result:
-            points = int(result.get("story_points"))
-            reasoning = str(result.get("reasoning", "AI estimation based on complexity.")).strip()
-            if points in VALID_STORY_POINTS:
-                return {"story_points": points, "reasoning": reasoning, "source": "ai"}
-    except Exception:
-        pass
-
-    points, reasoning = _fallback_story_points(text)
-    return {"story_points": points, "reasoning": reasoning, "source": "fallback"}
-
-
-@app.post("/ai/priority", response_model=PriorityResponse)
-def analyze_priority(payload: PriorityRequest):
-    text = f"{payload.title} {payload.description}".strip()
-    prompt = (
-        "Classify this Scrum ticket priority. "
-        "Return JSON with keys: priority (normal|urgent|blocking), is_urgent (bool), is_blocking (bool), reasoning (string).\n"
-        f"Ticket text: {text}"
-    )
-
-    try:
-        result = _ai_json(prompt)
-        if result:
-            priority = str(result.get("priority", "normal")).strip().lower()
-            is_urgent = bool(result.get("is_urgent", False))
-            is_blocking = bool(result.get("is_blocking", False))
-            reasoning = str(result.get("reasoning", "AI priority analysis.")).strip()
-
-            if priority in {"normal", "urgent", "blocking"}:
-                return {
-                    "priority": priority,
-                    "is_urgent": is_urgent,
-                    "is_blocking": is_blocking,
-                    "reasoning": reasoning,
-                    "source": "ai",
-                }
-    except Exception:
-        pass
-
-    priority, is_urgent, is_blocking, reasoning = _fallback_priority(text)
-    return {
-        "priority": priority,
-        "is_urgent": is_urgent,
-        "is_blocking": is_blocking,
-        "reasoning": reasoning,
-        "source": "fallback",
-    }
