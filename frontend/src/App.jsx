@@ -23,8 +23,10 @@ const App = () => {
   const [tickets, setTickets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [selectedTicket, setSelectedTicket] = useState(null);
+  const [editingTicket, setEditingTicket] = useState(null);
   const [newTicket, setNewTicket] = useState({
     title: "",
     description: "",
@@ -153,6 +155,40 @@ const App = () => {
     } catch {
       const local = tickets.find((t) => t.id === id);
       setSelectedTicket(local || null);
+    }
+  };
+
+  const openEditModal = (ticket) => {
+    setEditingTicket({ ...ticket });
+    setIsEditModalOpen(true);
+  };
+
+  const handleEditTicket = async (e) => {
+    e.preventDefault();
+    if (!editingTicket.title.trim()) return;
+
+    const updatedTickets = tickets.map((t) => (t.id === editingTicket.id ? editingTicket : t));
+    setTickets(updatedTickets);
+    saveToLocal(updatedTickets);
+
+    try {
+      await fetch(`${API_BASE}/tickets/${editingTicket.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: editingTicket.title,
+          description: editingTicket.description,
+          status: editingTicket.status,
+        }),
+      });
+      setIsEditModalOpen(false);
+      setEditingTicket(null);
+      setSelectedTicket(null);
+      fetchTickets();
+    } catch (err) {
+      console.error("Error editing ticket:", err);
+      setIsEditModalOpen(false);
+      setEditingTicket(null);
     }
   };
 
@@ -355,11 +391,89 @@ const App = () => {
               </div>
             </div>
 
-            <div className="px-6 pb-6">
-              <button onClick={() => setSelectedTicket(null)} className="w-full py-3 rounded-2xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-sm transition-all shadow-lg shadow-purple-200 active:scale-[0.98]">
+            <div className="px-6 pb-6 flex gap-3">
+              <button onClick={() => setSelectedTicket(null)} className="flex-1 py-3 rounded-2xl bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold text-sm transition-all active:scale-[0.98]">
                 Close
               </button>
+              <button onClick={() => openEditModal(selectedTicket)} className="flex-1 py-3 rounded-2xl bg-purple-600 hover:bg-purple-700 text-white font-bold text-sm transition-all shadow-lg shadow-purple-200 active:scale-[0.98]">
+                Edit
+              </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {isEditModalOpen && editingTicket && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden border border-slate-100 animate-in zoom-in-95 duration-300">
+            <div className="flex items-center justify-between p-6 border-b border-slate-50 bg-slate-50/50">
+              <div>
+                <h2 className="text-xl font-bold text-slate-800">Edit Story</h2>
+                <p className="text-xs text-slate-500 mt-0.5">Update task details</p>
+              </div>
+              <button
+                onClick={() => setIsEditModalOpen(false)}
+                className="p-2 rounded-full hover:bg-slate-200 text-slate-400 transition-colors"
+                type="button"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleEditTicket} className="p-6 space-y-5">
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1">Title</label>
+                <input
+                  autoFocus
+                  required
+                  type="text"
+                  placeholder="e.g. Implement User Authentication"
+                  className="w-full px-4 py-3 rounded-2xl border border-slate-200 focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none transition-all text-sm font-medium"
+                  value={editingTicket.title}
+                  onChange={(e) => setEditingTicket({ ...editingTicket, title: e.target.value })}
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1">Context</label>
+                <textarea
+                  rows="3"
+                  placeholder="What is the objective and technical scope?"
+                  className="w-full px-4 py-3 rounded-2xl border border-slate-200 focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none transition-all text-sm resize-none leading-relaxed"
+                  value={editingTicket.description}
+                  onChange={(e) => setEditingTicket({ ...editingTicket, description: e.target.value })}
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1">Status</label>
+                <select
+                  className="w-full px-4 py-3 rounded-2xl border border-slate-200 focus:ring-2 focus:ring-purple-500 outline-none transition-all text-sm font-bold bg-white cursor-pointer appearance-none"
+                  value={editingTicket.status}
+                  onChange={(e) => setEditingTicket({ ...editingTicket, status: e.target.value })}
+                >
+                  <option value="todo">To Do</option>
+                  <option value="in-progress">In Progress</option>
+                  <option value="done">Done</option>
+                </select>
+              </div>
+
+              <div className="pt-4 flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setIsEditModalOpen(false)}
+                  className="flex-1 py-3.5 rounded-2xl font-bold text-slate-500 hover:bg-slate-50 transition-colors text-sm"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 py-3.5 bg-purple-600 hover:bg-purple-700 text-white rounded-2xl font-bold shadow-lg shadow-purple-200 transition-all active:scale-[0.98] text-sm"
+                >
+                  Save Changes
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
