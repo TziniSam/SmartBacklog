@@ -1,3 +1,6 @@
+// SmartBacklog Frontend
+// A React-based Kanban board for managing Agile tickets with AI-powered features
+
 import React, { useEffect, useState } from "react";
 import {
   Plus,
@@ -17,22 +20,25 @@ import {
   WifiOff,
 } from "lucide-react";
 
+// Backend API endpoint configuration
 const API_BASE = "http://localhost:8000";
 
 const App = () => {
-  const [tickets, setTickets] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
-  const [isConnected, setIsConnected] = useState(false);
-  const [selectedTicket, setSelectedTicket] = useState(null);
-  const [editingTicket, setEditingTicket] = useState(null);
+  // State management for tickets and UI
+  const [tickets, setTickets] = useState([]); // All tickets from backend
+  const [loading, setLoading] = useState(true); // Loading state for initial fetch
+  const [isModalOpen, setIsModalOpen] = useState(false); // Add ticket modal
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false); // Edit ticket modal
+  const [isConnected, setIsConnected] = useState(false); // Backend connection status
+  const [selectedTicket, setSelectedTicket] = useState(null); // Currently selected ticket for details
+  const [editingTicket, setEditingTicket] = useState(null); // Ticket being edited
   const [newTicket, setNewTicket] = useState({
     title: "",
     description: "",
     priority: "medium",
   });
 
+  // Kanban board column definitions
   const columns = [
     {
       id: "todo",
@@ -54,6 +60,7 @@ const App = () => {
     },
   ];
 
+  // Local storage fallback functions (used when backend is unreachable)
   const saveToLocal = (data) => {
     localStorage.setItem("smartbacklog_fallback", JSON.stringify(data));
   };
@@ -63,6 +70,7 @@ const App = () => {
     return saved ? JSON.parse(saved) : [];
   };
 
+  // Fetch all tickets from backend API
   const fetchTickets = async () => {
     try {
       setLoading(true);
@@ -70,21 +78,23 @@ const App = () => {
       if (!response.ok) throw new Error("Server error");
       const data = await response.json();
       setTickets(data);
-      saveToLocal(data);
+      saveToLocal(data); // Save to local storage as backup
       setIsConnected(true);
     } catch (err) {
       console.warn("Backend unreachable, falling back to local storage:", err?.message);
-      setTickets(getFromLocal());
+      setTickets(getFromLocal()); // Use local storage if backend is down
       setIsConnected(false);
     } finally {
       setLoading(false);
     }
   };
 
+  // Initial fetch on component mount
   useEffect(() => {
     fetchTickets();
   }, []);
 
+  // Handle adding a new ticket
   const handleAddTicket = async (e) => {
     e.preventDefault();
     if (!newTicket.title.trim()) return;
@@ -93,8 +103,10 @@ const App = () => {
     const ticketToAdd = { ...newTicket, id: tempId, status: "todo" };
 
     try {
+      // Optimistically update UI first
       setTickets((prev) => [...prev, ticketToAdd]);
 
+      // Persist to backend
       const response = await fetch(`${API_BASE}/tickets`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -105,25 +117,28 @@ const App = () => {
 
       setIsModalOpen(false);
       setNewTicket({ title: "", description: "", priority: "medium" });
-      fetchTickets();
+      fetchTickets(); // Refresh to get AI-generated fields
     } catch (err) {
       console.error("Error adding ticket:", err);
-      saveToLocal([...tickets, ticketToAdd]);
+      saveToLocal([...tickets, ticketToAdd]); // Save to local storage if backend fails
       setIsModalOpen(false);
       setNewTicket({ title: "", description: "", priority: "medium" });
     }
   };
 
+  // Handle deleting a ticket
   const handleDelete = async (id) => {
     try {
+      // Optimistically update UI
       setTickets((prev) => prev.filter((t) => t.id !== id));
       await fetch(`${API_BASE}/tickets/${id}`, { method: "DELETE" });
     } catch (err) {
       console.error("Error deleting ticket:", err);
-      saveToLocal(tickets.filter((t) => t.id !== id));
+      saveToLocal(tickets.filter((t) => t.id !== id)); // Save to local storage if backend fails
     }
   };
 
+  // Handle moving a ticket between columns (left/right)
   const moveTicket = async (id, currentStatus, direction) => {
     const statusOrder = ["todo", "in-progress", "done"];
     const currentIndex = statusOrder.indexOf(currentStatus);
@@ -141,28 +156,32 @@ const App = () => {
           body: JSON.stringify({ status: newStatus }),
         });
       } catch {
-        // stay on local update if backend unreachable
+        // Stay on local update if backend unreachable
       }
     }
   };
 
+  // Fetch and display AI-generated ticket details
   const handleAIGenerate = async (id) => {
     try {
       const response = await fetch(`${API_BASE}/tickets/${id}`);
       if (!response.ok) throw new Error();
       const data = await response.json();
-      setSelectedTicket(data);
+      setSelectedTicket(data); // Show ticket with AI-generated fields
     } catch {
+      // Fallback to local ticket if backend is down
       const local = tickets.find((t) => t.id === id);
       setSelectedTicket(local || null);
     }
   };
 
+  // Open edit modal with ticket data
   const openEditModal = (ticket) => {
     setEditingTicket({ ...ticket });
     setIsEditModalOpen(true);
   };
 
+  // Handle editing a ticket
   const handleEditTicket = async (e) => {
     e.preventDefault();
     if (!editingTicket.title.trim()) return;
@@ -184,7 +203,7 @@ const App = () => {
       setIsEditModalOpen(false);
       setEditingTicket(null);
       setSelectedTicket(null);
-      fetchTickets();
+      fetchTickets(); // Refresh to get updated AI fields
     } catch (err) {
       console.error("Error editing ticket:", err);
       setIsEditModalOpen(false);
@@ -192,8 +211,10 @@ const App = () => {
     }
   };
 
+  // Render main application
   return (
     <div className="min-h-screen bg-[#fcfcfd] text-slate-900 font-sans selection:bg-purple-100">
+      {/* Navigation bar with logo and connection status */}
       <nav className="border-b border-slate-200 bg-white/80 backdrop-blur-md sticky top-0 z-10 px-6 py-3">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -230,7 +251,9 @@ const App = () => {
         </div>
       </nav>
 
+      {/* Main content area */}
       <main className="max-w-7xl mx-auto p-6">
+        {/* Warning banner when backend is unreachable */}
         {!isConnected && (
           <div className="mb-6 p-3 bg-amber-50 border border-amber-100 rounded-xl flex items-center gap-3 text-amber-800 animate-in fade-in slide-in-from-top-2">
             <AlertCircle className="w-4 h-4 shrink-0" />
@@ -242,6 +265,7 @@ const App = () => {
           </div>
         )}
 
+        {/* Kanban board columns */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           {columns.map((column) => (
             <div key={column.id} className="flex flex-col min-h-[75vh]">
@@ -342,6 +366,7 @@ const App = () => {
         </div>
       </main>
 
+      {/* Ticket details modal (shows AI-generated fields) */}
       {selectedTicket && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
           <div className="bg-white w-full max-w-lg rounded-3xl shadow-2xl border border-slate-100 overflow-hidden animate-in zoom-in-95 duration-300">
@@ -403,6 +428,7 @@ const App = () => {
         </div>
       )}
 
+      {/* Edit ticket modal */}
       {isEditModalOpen && editingTicket && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
           <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden border border-slate-100 animate-in zoom-in-95 duration-300">
@@ -478,6 +504,7 @@ const App = () => {
         </div>
       )}
 
+      {/* Add new ticket modal */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
           <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden border border-slate-100 animate-in zoom-in-95 duration-300">
